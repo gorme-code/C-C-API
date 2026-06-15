@@ -4,6 +4,10 @@ POST   /api/closures            — submit a closure (creates a Case)
 GET    /api/closures            — list closure events for the district
 GET    /api/closures/{id}       — single closure event detail
 POST   /api/closures/{id}/cancel — cancel a closure event
+
+Salesforce field names follow the Phase 1 data model & build guide. The
+Closure_Submission Case carries Submission_* fields; the Flow expands it into
+Closure_Event__c rows.
 """
 from __future__ import annotations
 
@@ -29,6 +33,21 @@ from app.services.salesforce import sf
 router = APIRouter(prefix="/api/closures", tags=["closures"])
 
 CLOSURE_SUBMISSION_RT = "Closure_Submission"
+WAIVER_RT = "Closure_Waiver_Request"
+
+# Tier thresholds (days). Source of truth is Compliance_Rules__mdt.Default
+# (Tier2=3, Tier3=6, Tier4=9); mirrored here for the response tier label.
+_TIER2, _TIER3, _TIER4 = 3, 6, 9
+
+
+def _tier_for_days(days: float) -> str:
+    if days <= _TIER2:
+        return "Tier 1"
+    if days <= _TIER3:
+        return "Tier 2"
+    if days <= _TIER4:
+        return "Tier 3"
+    return "Tier 4"
 
 
 @router.post("", response_model=ClosureCreateResponse)
@@ -39,7 +58,8 @@ def create_closure(
     """Create a Closure_Submission Case; the SF Flow expands it into events.
 
     District is always taken from the resolved Contact — never the client.
-    External_Id__c provides idempotency.
+    External_Id__c provides idempotency. Submission_Status__c = 'Submitted'
+    is what triggers the Create_Closure_Events Flow.
     """
     if body.scope != ClosureScope.district_wide and not body.school_ids:
         raise ValidationError("school_ids is required when scope is not District_Wide.")
@@ -57,47 +77,64 @@ def create_closure(
         return _build_create_response(existing["Id"], user.account_id)
 
     payload = {
-        "Scope__c": body.scope.value,
+        "RecordTypeId": sf.record_type_id("Case", CLOSURE_SUBMISSION_RT),
+        "Submission_Scope__c": body.scope.value,
         "Closure_Start_Date__c": body.closure_start_date.isoformat(),
         "Closure_End_Date__c": body.closure_end_date.isoformat(),
         "Closure_Type__c": body.closure_type,
         "Closure_Reason__c": body.closure_reason,
-        "Hours_Missed__c": body.hours_missed,
+        "Hours_Missed_Per_Day__c": body.hours_missed,
+        "Submission_Status__c": "Submitted",  # fires Create_Closure_Events Flow
         "External_Id__c": body.external_id,
         "Submission_District__c": user.account_id,
         "Reported_By_Contact__c": user.contact_id,
     }
     if body.school_ids:
-        payload["School_Ids__c"] = ";".join(body.school_ids)
+        # Single_School uses the first id; Multiple_Schools uses the full list.
+        payload["Affected_School_IDs__c"] = ",".join(body.school_ids)
 
     result = sf.create("Case", payload)
     return _build_create_response(result["id"], user.account_id)
 
 
 def _build_create_response(case_id: str, district_id: str) -> ClosureCreateResponse:
-    """Assemble the create response from the Case + district YTD totals."""
+    """Assemble the create response from the events + district YTD totals."""
     events = sf.query(
-        "SELECT Id FROM Closure_Event__c "
+        "SELECT Id, Make_Up_Required__c, Waiver_Request_Case__c "
+        "FROM Closure_Event__c "
         f"WHERE Source_Case__c = '{case_id}'"
     )
     account = sf.query_one(
-        "SELECT Total_Missed_Days_YTD__c, Current_Tier__c "
+        "SELECT Total_Missed_Days_YTD__c "
         f"FROM Account WHERE Id = '{district_id}' LIMIT 1"
     ) or {}
-    waiver = sf.query_one(
-        "SELECT Id FROM Case "
-        "WHERE RecordType.DeveloperName = 'Closure_Waiver_Request' "
-        f"AND Waiver_District__c = '{district_id}' "
-        "ORDER BY CreatedDate DESC LIMIT 1"
+    ytd = float(account.get("Total_Missed_Days_YTD__c") or 0.0)
+
+    makeup_required = any(e.get("Make_Up_Required__c") for e in events)
+
+    # Prefer the waiver linked to one of this submission's events; otherwise
+    # fall back to the most recent Draft waiver for the district.
+    waiver_case_id = next(
+        (e["Waiver_Request_Case__c"] for e in events if e.get("Waiver_Request_Case__c")),
+        None,
     )
+    if not waiver_case_id:
+        waiver = sf.query_one(
+            "SELECT Id FROM Case "
+            f"WHERE RecordType.DeveloperName = '{WAIVER_RT}' "
+            f"AND Waiver_District__c = '{district_id}' "
+            "ORDER BY CreatedDate DESC LIMIT 1"
+        )
+        waiver_case_id = waiver["Id"] if waiver else None
+
     return ClosureCreateResponse(
         case_id=case_id,
         events_created=len(events),
-        ytd_missed_days=float(account.get("Total_Missed_Days_YTD__c") or 0.0),
-        current_tier=account.get("Current_Tier__c"),
-        makeup_required=bool(account.get("Total_Missed_Days_YTD__c")),
-        waiver_auto_created=waiver is not None,
-        waiver_case_id=waiver["Id"] if waiver else None,
+        ytd_missed_days=ytd,
+        current_tier=_tier_for_days(ytd),
+        makeup_required=makeup_required,
+        waiver_auto_created=waiver_case_id is not None,
+        waiver_case_id=waiver_case_id,
     )
 
 
@@ -130,13 +167,19 @@ def list_closures(
         "Make_Up_Required__c, Make_Up_Method__c, School_Year__c "
         f"FROM Closure_Event__c WHERE {where} ORDER BY Closure_Date__c"
     )
-
     closures = [_to_closure_event(r) for r in records]
+
+    # Per-school YTD comes from the authoritative Account roll-up (in days),
+    # not from summing event hours.
+    school_ids = {r["School__c"] for r in records if r.get("School__c")}
     ytd: dict[str, float] = {}
-    for r in records:
-        sid = r.get("School__c")
-        if sid:
-            ytd[sid] = ytd.get(sid, 0.0) + float(r.get("Hours_Missed__c") or 0.0)
+    if school_ids:
+        id_list = ", ".join(f"'{sid}'" for sid in school_ids)
+        for acc in sf.query(
+            "SELECT Id, Total_Missed_Days_YTD__c FROM Account "
+            f"WHERE Id IN ({id_list})"
+        ):
+            ytd[acc["Id"]] = float(acc.get("Total_Missed_Days_YTD__c") or 0.0)
 
     return ClosuresListResponse(
         closures=closures,
@@ -173,11 +216,7 @@ def get_closure(
         "SELECT Id, Name, District__c, School__r.Name, Closure_Date__c, "
         "Closure_Type__c, Closure_Reason__c, Hours_Missed__c, Status__c, "
         "Make_Up_Required__c, Source_Case__c, Reported_By__r.Name, "
-        "Reported_Date__c, "
-        "(SELECT Makeup_Day__r.Id, Makeup_Day__r.Makeup_Date__c, "
-        "Makeup_Day__r.Method__c, Makeup_Day__r.Status__c "
-        "FROM Closure_Makeup_Links__r), "
-        "(SELECT Case__c FROM Waiver_Closure_Links__r) "
+        "Reported_Date__c, Waiver_Request_Case__c "
         f"FROM Closure_Event__c WHERE Id = '{closure_id}' LIMIT 1"
     )
     if not record:
@@ -185,10 +224,14 @@ def get_closure(
     if record.get("District__c") != user.account_id:
         raise DistrictScopeViolation("You do not have access to this closure event.")
 
+    # Makeup days via the junction (separate query — robust against child
+    # relationship-name ambiguity on Closure_Event__c).
     makeup_days = []
-    links = (record.get("Closure_Makeup_Links__r") or {}).get("records", []) \
-        if isinstance(record.get("Closure_Makeup_Links__r"), dict) else []
-    for link in links:
+    for link in sf.query(
+        "SELECT Makeup_Day__r.Id, Makeup_Day__r.Makeup_Date__c, "
+        "Makeup_Day__r.Method__c, Makeup_Day__r.Status__c "
+        f"FROM Closure_Makeup_Link__c WHERE Closure_Event__c = '{closure_id}'"
+    ):
         md = link.get("Makeup_Day__r") or {}
         if md:
             makeup_days.append(
@@ -199,12 +242,6 @@ def get_closure(
                     status=md.get("Status__c"),
                 )
             )
-
-    waiver_case_id = None
-    wlinks = (record.get("Waiver_Closure_Links__r") or {}).get("records", []) \
-        if isinstance(record.get("Waiver_Closure_Links__r"), dict) else []
-    if wlinks:
-        waiver_case_id = wlinks[0].get("Case__c")
 
     school = record.get("School__r") or {}
     reporter = record.get("Reported_By__r") or {}
@@ -222,7 +259,7 @@ def get_closure(
         reported_by=reporter.get("Name") if isinstance(reporter, dict) else None,
         reported_date=record.get("Reported_Date__c"),
         makeup_days=makeup_days,
-        waiver_case_id=waiver_case_id,
+        waiver_case_id=record.get("Waiver_Request_Case__c"),
     )
 
 
@@ -246,12 +283,15 @@ def cancel_closure(
 
     sf.update("Closure_Event__c", closure_id, {"Status__c": "Cancelled"})
 
+    # Amendment audit Case. Submission_Status__c is set to 'Acknowledged' (NOT
+    # 'Submitted') so this record does not trigger Create_Closure_Events.
     amendment = sf.create(
         "Case",
         {
-            "RecordType.DeveloperName": CLOSURE_SUBMISSION_RT,
+            "RecordTypeId": sf.record_type_id("Case", CLOSURE_SUBMISSION_RT),
             "Submission_District__c": user.account_id,
             "Reported_By_Contact__c": user.contact_id,
+            "Submission_Status__c": "Acknowledged",
             "Subject": f"Amendment — cancel {closure_id}",
             "Description": (
                 f"Cancelled Closure_Event {closure_id}. Reason: {body.reason}"

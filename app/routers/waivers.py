@@ -30,8 +30,9 @@ def list_waivers(
     """List all waiver cases for the authenticated user's district."""
     records = sf.query(
         "SELECT Id, CaseNumber, Waiver_Status__c, Tier__c, "
-        "Total_Missed_Days__c, Days_Made_Up__c, Days_Requested_For_Waiver__c, "
-        "CreatedDate, Closure_Events_Count__c FROM Case "
+        "Total_Missed_Days__c, Days_Already_Made_Up__c, "
+        "Days_Requested_For_Waiver__c, CreatedDate, "
+        "(SELECT Id FROM WaiverCase__r) FROM Case "
         f"WHERE RecordType.DeveloperName = '{WAIVER_RT}' "
         f"AND Waiver_District__c = '{user.account_id}' "
         "ORDER BY CreatedDate DESC"
@@ -43,16 +44,21 @@ def list_waivers(
             status=r.get("Waiver_Status__c"),
             tier=r.get("Tier__c"),
             total_missed_days=r.get("Total_Missed_Days__c"),
-            days_made_up=r.get("Days_Made_Up__c"),
+            days_made_up=r.get("Days_Already_Made_Up__c"),
             days_requested_for_waiver=r.get("Days_Requested_For_Waiver__c"),
             created_date=r.get("CreatedDate"),
-            closure_events_count=int(r["Closure_Events_Count__c"])
-            if r.get("Closure_Events_Count__c") is not None
-            else None,
+            closure_events_count=_subquery_count(r.get("WaiverCase__r")),
         )
         for r in records
     ]
     return WaiversListResponse(waivers=waivers)
+
+
+def _subquery_count(sub: object) -> int | None:
+    """Count records from a SOQL child-subquery result (dict or None)."""
+    if isinstance(sub, dict):
+        return sub.get("totalSize", len(sub.get("records", [])))
+    return None
 
 
 @router.patch("/{waiver_id}", response_model=WaiverUpdateResponse)

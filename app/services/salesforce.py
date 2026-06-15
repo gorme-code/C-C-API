@@ -93,6 +93,7 @@ class SalesforceService:
 
     def __init__(self) -> None:
         self._client: Salesforce | None = None
+        self._rt_cache: dict[tuple[str, str], str] = {}
 
     @property
     def client(self) -> Salesforce:
@@ -113,6 +114,26 @@ class SalesforceService:
     def query_one(self, soql: str) -> dict[str, Any] | None:
         records = self.query(soql)
         return records[0] if records else None
+
+    def record_type_id(self, sobject: str, developer_name: str) -> str:
+        """Resolve (and cache) a RecordTypeId by SObject + DeveloperName.
+
+        A record type can only be set on insert via its 18-char Id, not its
+        developer name — hence this lookup.
+        """
+        key = (sobject, developer_name)
+        if key not in self._rt_cache:
+            record = self.query_one(
+                "SELECT Id FROM RecordType "
+                f"WHERE SobjectType = '{sobject}' "
+                f"AND DeveloperName = '{developer_name}' LIMIT 1"
+            )
+            if not record:
+                raise SalesforceError(
+                    f"RecordType {developer_name} not found for {sobject}."
+                )
+            self._rt_cache[key] = record["Id"]
+        return self._rt_cache[key]
 
     def create(self, sobject: str, data: dict[str, Any]) -> dict[str, Any]:
         return self._with_refresh(lambda: getattr(self.client, sobject).create(data))

@@ -53,12 +53,13 @@ def create_makeup(
     if existing:
         makeup_id = existing["Id"]
     else:
+        # Hours_Covered__c lives on the junction, NOT on Makeup_Day__c.
         result = sf.create(
             "Makeup_Day__c",
             {
                 "Makeup_Date__c": body.makeup_date.isoformat(),
                 "Method__c": body.method,
-                "Hours_Covered__c": body.hours_covered,
+                "Status__c": "Proposed",
                 "External_Id__c": body.external_id,
             },
         )

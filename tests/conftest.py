@@ -21,6 +21,7 @@ def mock_sf(monkeypatch):
     fake.query_one.return_value = None
     fake.create.return_value = {"id": "500FAKE0000000000", "success": True}
     fake.update.return_value = 204
+    fake.record_type_id.return_value = "012FAKE0000000000"
 
     # Patch the singleton wherever it was imported.
     import app.services.salesforce as sf_module

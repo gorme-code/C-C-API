@@ -25,17 +25,31 @@ _REASONS_CACHE: dict[str, object] = {"data": None, "expires_at": 0.0}
 _REASONS_TTL_SECONDS = 3600
 
 
+# The C-C org has NO SIDN / State-ID field on Account (verified against the
+# Salesforce repo). Selecting a nonexistent field errors the whole query, so
+# `sidn` is returned as null. If a real field is added, set its API name here
+# and it flows straight through to the response.
+SCHOOL_SIDN_FIELD: str | None = None
+
+
 @router.get("/schools", response_model=SchoolsResponse)
 def get_schools(user: CurrentUser = Depends(get_current_user)) -> SchoolsResponse:
     """Return all active School Accounts in the user's district."""
+    fields = ["Id", "Name"]
+    if SCHOOL_SIDN_FIELD:
+        fields.append(SCHOOL_SIDN_FIELD)
     records = sf.query(
-        "SELECT Id, Name, SIDN__c FROM Account "
+        f"SELECT {', '.join(fields)} FROM Account "
         "WHERE RecordType.DeveloperName = 'School' "
         f"AND ParentId = '{user.account_id}' "
         "ORDER BY Name"
     )
     schools = [
-        School(id=r["Id"], name=r["Name"], sidn=r.get("SIDN__c"))
+        School(
+            id=r["Id"],
+            name=r["Name"],
+            sidn=r.get(SCHOOL_SIDN_FIELD) if SCHOOL_SIDN_FIELD else None,
+        )
         for r in records
     ]
     return SchoolsResponse(schools=schools)
