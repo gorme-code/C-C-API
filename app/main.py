@@ -4,10 +4,16 @@ Run locally:
     uvicorn app.main:app --reload
 """
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.errors import APIError, api_error_handler
+from app.errors import (
+    APIError,
+    api_error_handler,
+    unhandled_exception_handler,
+    validation_error_handler,
+)
 from app.routers import closures, makeup, schools, waivers
 
 app = FastAPI(
@@ -24,8 +30,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Standard error shape for the frontend.
+# Standard error shape for the frontend — covers app errors, request-body
+# validation, and any unexpected exception.
 app.add_exception_handler(APIError, api_error_handler)
+app.add_exception_handler(RequestValidationError, validation_error_handler)
+app.add_exception_handler(Exception, unhandled_exception_handler)
 
 # Endpoint groups.
 app.include_router(schools.router)

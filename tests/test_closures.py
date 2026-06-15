@@ -93,6 +93,18 @@ def test_create_closure_requires_school_ids_when_scoped(client, mock_sf):
     assert resp.json()["error"] == "VALIDATION_ERROR"
 
 
+def test_pydantic_validation_uses_standard_error_shape(client, mock_sf):
+    # Missing required fields fail at the Pydantic layer (before the route).
+    resp = client.post("/api/closures", json={"scope": "District_Wide"})
+
+    assert resp.status_code == 422
+    body = resp.json()
+    # Must be the standard shape, NOT FastAPI's default {"detail": [...]}.
+    assert set(body) == {"error", "message", "status_code"}
+    assert body["error"] == "VALIDATION_ERROR"
+    assert body["status_code"] == 422
+
+
 def test_list_closures_scopes_to_district(client, mock_sf, mock_user):
     mock_sf.query.return_value = []
     resp = client.get("/api/closures")
