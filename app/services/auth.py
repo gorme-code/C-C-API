@@ -7,6 +7,12 @@ On every request the API:
      all queries to the user's district.
 
 See section 1 and Step 5 of the API guide.
+
+Note on libraries: MSAL is the Microsoft-identity library used on the *React*
+side to ACQUIRE the token. Validating an inbound token (signature, audience,
+expiry) is a JWT-verification job, which MSAL does not perform — so we verify
+against the tenant's published JWKS using python-jose. ENTRA_TENANT_ID and
+ENTRA_CLIENT_ID drive the issuer and audience checks.
 """
 from __future__ import annotations
 
@@ -47,36 +53,33 @@ def _jwks() -> dict:
     return resp.json()
 
 
-def _validate_token(token: str) -> dict:
-    """Validate an Entra ID JWT and return its claims.
+def validate_token(token: str) -> dict:
+    """Validate an Entra ID bearer token and return its decoded claims.
 
-    Raises Unauthorized on any signature, audience, or expiry failure.
+    Verifies the RS256 signature against the tenant JWKS, the audience against
+    ENTRA_CLIENT_ID, and the issuer against ENTRA_TENANT_ID. Raises
+    Unauthorized (HTTP 401) on any signature, audience, or expiry failure.
     """
     try:
-        unverified_header = jwt.get_unverified_header(token)
-        kid = unverified_header.get("kid")
+        kid = jwt.get_unverified_header(token).get("kid")
         key = next((k for k in _jwks().get("keys", []) if k.get("kid") == kid), None)
         if key is None:
             raise Unauthorized("Signing key not found for token.")
 
-        claims = jwt.decode(
+        return jwt.decode(
             token,
             key,
             algorithms=["RS256"],
             audience=settings.entra_client_id,
             issuer=f"https://login.microsoftonline.com/{settings.entra_tenant_id}/v2.0",
         )
-        return claims
     except JWTError as exc:
         raise Unauthorized(f"Invalid or expired token: {exc}") from exc
 
 
-def _extract_email(claims: dict) -> str:
-    email = (
-        claims.get("email")
-        or claims.get("preferred_username")
-        or claims.get("upn")
-    )
+def extract_email(claims: dict) -> str:
+    """Pull the user's email/UPN from the decoded claims."""
+    email = claims.get("email") or claims.get("preferred_username") or claims.get("upn")
     if not email:
         raise Unauthorized("Token does not contain an email/UPN claim.")
     return email
@@ -104,17 +107,38 @@ def resolve_contact(email: str) -> CurrentUser:
     )
 
 
+def _dev_bypass_user() -> CurrentUser:
+    """Stubbed identity for local dev when AUTH_DISABLED is on.
+
+    Returns a fixed district-scoped user WITHOUT calling Entra or Salesforce,
+    so endpoints can be exercised before real credentials exist. Refuses to
+    activate outside the development environment.
+    """
+    if settings.api_env.lower() != "development":
+        raise Unauthorized("AUTH_DISABLED is only permitted in development.")
+    return CurrentUser(
+        email=settings.dev_user_email,
+        contact_id=settings.dev_contact_id,
+        account_id=settings.dev_account_id,
+        name=settings.dev_user_name,
+    )
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> CurrentUser:
     """FastAPI dependency: validate the token and resolve the Contact.
 
     Inject this into any router that needs the authenticated, district-scoped
-    user identity.
+    user identity. With AUTH_DISABLED=true (development only), returns a
+    stubbed dev user and skips token validation entirely.
     """
+    if settings.auth_disabled:
+        return _dev_bypass_user()
+
     if credentials is None or not credentials.credentials:
         raise Unauthorized("Authorization header missing.")
 
-    claims = _validate_token(credentials.credentials)
-    email = _extract_email(claims)
+    claims = validate_token(credentials.credentials)
+    email = extract_email(claims)
     return resolve_contact(email)

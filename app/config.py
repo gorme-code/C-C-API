@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     api_env: str = "development"
     allowed_origins: str = "http://localhost:3000"
 
+    # Local-dev auth bypass — lets you run endpoints before Entra/React/SF
+    # exist. IGNORED unless api_env == "development".
+    auth_disabled: bool = False
+    dev_user_email: str = "dev.user@example.org"
+    dev_contact_id: str = "003DEV00000000000"
+    dev_account_id: str = "001DEV00000000000"  # the fake district
+    dev_user_name: str = "Dev User"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
