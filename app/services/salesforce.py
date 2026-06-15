@@ -16,11 +16,41 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 from simple_salesforce import Salesforce
 from simple_salesforce.exceptions import SalesforceError as SFLibError
 
 from app.config import settings
 from app.errors import SalesforceError
+
+
+def _build_client_credentials() -> Salesforce:
+    """Authenticate via the OAuth 2.0 client-credentials flow.
+
+    This is the Phase 1 production flow: a connected app + integration user,
+    using only SF_CLIENT_ID / SF_CLIENT_SECRET (no username/password). Requires
+    the connected app to have a "Run As" user set and the flow enabled.
+    """
+    token_url = settings.sf_instance_url.rstrip("/") + "/services/oauth2/token"
+    resp = httpx.post(
+        token_url,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": settings.sf_client_id,
+            "client_secret": settings.sf_client_secret,
+        },
+        timeout=30.0,
+    )
+    if resp.status_code != 200:
+        raise SalesforceError(
+            f"Client-credentials auth failed ({resp.status_code}): {resp.text}"
+        )
+    tok = resp.json()
+    return Salesforce(
+        instance_url=tok["instance_url"],
+        session_id=tok["access_token"],
+        version=settings.sf_api_version,
+    )
 
 
 def _build_username_password() -> Salesforce:
@@ -60,16 +90,19 @@ def _build_jwt() -> Salesforce:
 def _select_flow() -> str:
     """Resolve which auth flow to use from config / available credentials."""
     flow = (settings.sf_auth_flow or "auto").lower()
-    if flow in ("username_password", "jwt"):
+    if flow in ("client_credentials", "username_password", "jwt"):
         return flow
-    # auto: prefer JWT if a key is present, else username/password.
+    # auto: JWT key wins, then username/password, then client-credentials.
     if settings.sf_jwt_key_file or settings.sf_jwt_key:
         return "jwt"
     if settings.sf_username and settings.sf_password:
         return "username_password"
+    if settings.sf_client_id and settings.sf_client_secret:
+        return "client_credentials"
     raise SalesforceError(
-        "No Salesforce credentials configured. Set SF_USERNAME/SF_PASSWORD for "
-        "the username/password flow, or SF_JWT_KEY_FILE/SF_JWT_KEY for JWT."
+        "No Salesforce credentials configured. Set SF_CLIENT_ID/SF_CLIENT_SECRET "
+        "for client credentials, SF_USERNAME/SF_PASSWORD for username/password, "
+        "or SF_JWT_KEY_FILE/SF_JWT_KEY for JWT."
     )
 
 
@@ -81,6 +114,8 @@ def get_sf_connection() -> Salesforce:
     """
     flow = _select_flow()
     try:
+        if flow == "client_credentials":
+            return _build_client_credentials()
         if flow == "jwt":
             return _build_jwt()
         return _build_username_password()

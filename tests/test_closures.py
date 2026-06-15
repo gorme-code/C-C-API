@@ -29,6 +29,50 @@ def test_create_closure_sets_district_from_contact_not_client(client, mock_sf, m
     assert payload["Hours_Missed_Per_Day__c"] == 6.5
 
 
+def test_create_single_school_one_day_events_created(client, mock_sf):
+    mock_sf.query_one.return_value = None  # no existing external_id
+    mock_sf.query.return_value = [
+        {"Id": "a0X1", "Make_Up_Required__c": True, "Waiver_Request_Case__c": None},
+    ]
+    body = {**_VALID_BODY, "scope": "Single_School", "school_ids": ["001AAA0000000001"]}
+
+    resp = client.post("/api/closures", json=body)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["events_created"] == 1
+    assert data["makeup_required"] is True
+    assert "ytd_missed_days" in data and "current_tier" in data
+
+
+def test_create_district_wide_six_events(client, mock_sf):
+    mock_sf.query_one.return_value = None
+    mock_sf.query.return_value = [
+        {"Id": f"a0X{i}", "Make_Up_Required__c": True, "Waiver_Request_Case__c": None}
+        for i in range(6)
+    ]
+
+    resp = client.post("/api/closures", json=_VALID_BODY)  # District_Wide
+
+    assert resp.status_code == 200
+    assert resp.json()["events_created"] == 6
+
+
+def test_create_tier_boundary_flags_waiver(client, mock_sf):
+    mock_sf.query_one.return_value = None
+    mock_sf.query.return_value = [
+        {"Id": "a0X1", "Make_Up_Required__c": True,
+         "Waiver_Request_Case__c": "500WAIVER00000000"},
+    ]
+
+    resp = client.post("/api/closures", json=_VALID_BODY)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["waiver_auto_created"] is True
+    assert data["waiver_case_id"] == "500WAIVER00000000"
+
+
 def test_create_closure_idempotent_returns_existing(client, mock_sf):
     mock_sf.query_one.return_value = {"Id": "500EXISTING000000"}
     mock_sf.query.return_value = []
@@ -58,6 +102,17 @@ def test_list_closures_scopes_to_district(client, mock_sf, mock_user):
     # District filter is always applied.
     soql = mock_sf.query.call_args[0][0]
     assert mock_user.account_id in soql
+
+
+def test_list_closures_status_filter_in_soql(client, mock_sf, mock_user):
+    mock_sf.query.return_value = []
+
+    resp = client.get("/api/closures?status=Make_Up_Pending")
+
+    assert resp.status_code == 200
+    soql = mock_sf.query.call_args[0][0]
+    assert "Status__c = 'Make_Up_Pending'" in soql
+    assert f"District__c = '{mock_user.account_id}'" in soql
 
 
 def test_get_closure_wrong_district_returns_403(client, mock_sf):
