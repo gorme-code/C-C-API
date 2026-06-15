@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+simple-salesforce
+msal
+python-jose[cryptography]
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+pytest
+pytest-asyncio
