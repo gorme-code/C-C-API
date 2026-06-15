@@ -112,20 +112,24 @@ def _build_create_response(case_id: str, district_id: str) -> ClosureCreateRespo
 
     makeup_required = any(e.get("Make_Up_Required__c") for e in events)
 
-    # Prefer the waiver linked to one of this submission's events; otherwise
-    # fall back to the most recent Draft waiver for the district.
+    # A waiver counts as auto-created by THIS submission only if it is tied to
+    # one of this submission's events — via the direct lookup on the event, or
+    # the Waiver_Closure_Link__c junction the Tier_Boundary_Check Flow writes.
+    # (A loose "latest district waiver" fallback gives false positives.)
     waiver_case_id = next(
         (e["Waiver_Request_Case__c"] for e in events if e.get("Waiver_Request_Case__c")),
         None,
     )
     if not waiver_case_id:
-        waiver = sf.query_one(
-            "SELECT Id FROM Case "
-            f"WHERE RecordType.DeveloperName = '{WAIVER_RT}' "
-            f"AND Waiver_District__c = '{district_id}' "
-            "ORDER BY CreatedDate DESC LIMIT 1"
-        )
-        waiver_case_id = waiver["Id"] if waiver else None
+        event_ids = [e["Id"] for e in events]
+        if event_ids:
+            id_list = ", ".join(f"'{i}'" for i in event_ids)
+            link = sf.query_one(
+                "SELECT Waiver_Case__c FROM Waiver_Closure_Link__c "
+                f"WHERE Closure_Event__c IN ({id_list}) AND Waiver_Case__c != null "
+                "ORDER BY CreatedDate DESC LIMIT 1"
+            )
+            waiver_case_id = link.get("Waiver_Case__c") if link else None
 
     return ClosureCreateResponse(
         case_id=case_id,
