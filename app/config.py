@@ -15,8 +15,12 @@ class Settings(BaseSettings):
     sf_instance_url: str = ""
     sf_api_version: str = "62.0"
 
-    # Salesforce — auth flow selection ("username_password" | "jwt" | "auto")
+    # Salesforce — auth flow selection
+    # ("session" | "username_password" | "jwt" | "client_credentials" | "auto")
     sf_auth_flow: str = "auto"
+    # Session flow: a ready access token (e.g. from the sf CLI) + SF_INSTANCE_URL.
+    # Quickest local-dev path; the token expires after a few hours.
+    sf_access_token: str = ""
     # Username/password flow
     sf_username: str = ""
     sf_password: str = ""

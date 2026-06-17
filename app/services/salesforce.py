@@ -53,6 +53,25 @@ def _build_client_credentials() -> Salesforce:
     )
 
 
+def _build_session() -> Salesforce:
+    """Authenticate with a pre-issued access token + instance URL.
+
+    Reuses an existing session (e.g. from `sf org auth show-access-token`) so
+    local dev needs no password, security token, or connected app. The token
+    expires after a few hours — refresh it and update SF_ACCESS_TOKEN when it
+    does (you'll see an INVALID_SESSION_ID error).
+    """
+    if not (settings.sf_access_token and settings.sf_instance_url):
+        raise SalesforceError(
+            "Session flow needs both SF_ACCESS_TOKEN and SF_INSTANCE_URL."
+        )
+    return Salesforce(
+        instance_url=settings.sf_instance_url,
+        session_id=settings.sf_access_token,
+        version=settings.sf_api_version,
+    )
+
+
 def _build_username_password() -> Salesforce:
     """Authenticate via the SOAP username/password (+ security token) flow."""
     return Salesforce(
@@ -90,9 +109,11 @@ def _build_jwt() -> Salesforce:
 def _select_flow() -> str:
     """Resolve which auth flow to use from config / available credentials."""
     flow = (settings.sf_auth_flow or "auto").lower()
-    if flow in ("client_credentials", "username_password", "jwt"):
+    if flow in ("session", "client_credentials", "username_password", "jwt"):
         return flow
-    # auto: JWT key wins, then username/password, then client-credentials.
+    # auto: session token wins, then JWT, username/password, client-credentials.
+    if settings.sf_access_token:
+        return "session"
     if settings.sf_jwt_key_file or settings.sf_jwt_key:
         return "jwt"
     if settings.sf_username and settings.sf_password:
@@ -114,6 +135,8 @@ def get_sf_connection() -> Salesforce:
     """
     flow = _select_flow()
     try:
+        if flow == "session":
+            return _build_session()
         if flow == "client_credentials":
             return _build_client_credentials()
         if flow == "jwt":
