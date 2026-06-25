@@ -17,6 +17,8 @@ from fastapi import APIRouter, Depends, Query
 
 from app.errors import DistrictScopeViolation, NotFound, ValidationError
 from app.models.closure_models import (
+    ClosureAmendRequest,
+    ClosureAmendResponse,
     ClosureCancelRequest,
     ClosureCancelResponse,
     ClosureCreateRequest,
@@ -305,5 +307,77 @@ def cancel_closure(
     return ClosureCancelResponse(
         success=True,
         closure_id=closure_id,
+        amendment_case_id=amendment["id"],
+    )
+
+
+@router.post("/{closure_id}/amend", response_model=ClosureAmendResponse)
+def amend_closure(
+    closure_id: str,
+    body: ClosureAmendRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> ClosureAmendResponse:
+    """Amend a closure event (UC-05).
+
+    Never edits in place: the original event is set to Status='Amended', a new
+    corrected Closure_Event is created with the supplied overrides (everything
+    else copied from the original), and an Amendment Case records the reason.
+    """
+    record = sf.query_one(
+        "SELECT Id, District__c, School__c, Closure_Date__c, Closure_Reason__c, "
+        "Closure_Type__c, Hours_Missed__c, Instructional_Day__c, Status__c, "
+        "Reported_By__c "
+        f"FROM Closure_Event__c WHERE Id = '{closure_id}' LIMIT 1"
+    )
+    if not record:
+        raise NotFound("Closure event not found.")
+    if record.get("District__c") != user.account_id:
+        raise DistrictScopeViolation("You do not have access to this closure event.")
+    if record.get("Status__c") in ("Cancelled", "Closed", "Amended"):
+        raise ValidationError(
+            f"Closure event is {record.get('Status__c')} and cannot be amended."
+        )
+
+    # Amendment audit Case (Submission_Status__c='Acknowledged' so it does NOT
+    # trigger Create_Closure_Events — we create the corrected event ourselves).
+    amendment = sf.create(
+        "Case",
+        {
+            "RecordTypeId": sf.record_type_id("Case", CLOSURE_SUBMISSION_RT),
+            "Submission_District__c": user.account_id,
+            "Reported_By_Contact__c": user.contact_id,
+            "Submission_Status__c": "Acknowledged",
+            "Subject": f"Amendment — amend {closure_id}",
+            "Description": f"Amended Closure_Event {closure_id}. Reason: {body.reason}",
+        },
+    )
+
+    # Mark the original as Amended.
+    sf.update("Closure_Event__c", closure_id, {"Status__c": "Amended"})
+
+    # Create the corrected event: copy the original, apply overrides.
+    def pick(override, field):
+        return override if override is not None else record.get(field)
+
+    new_event = sf.create(
+        "Closure_Event__c",
+        {
+            "School__c": record.get("School__c"),
+            "District__c": record.get("District__c"),
+            "Closure_Date__c": record.get("Closure_Date__c"),
+            "Closure_Reason__c": pick(body.closure_reason, "Closure_Reason__c"),
+            "Closure_Type__c": pick(body.closure_type, "Closure_Type__c"),
+            "Hours_Missed__c": pick(body.hours_missed, "Hours_Missed__c"),
+            "Instructional_Day__c": pick(body.instructional_day, "Instructional_Day__c"),
+            "Reported_By__c": record.get("Reported_By__c"),
+            "Source_Case__c": amendment["id"],
+            "Status__c": "Submitted",
+        },
+    )
+
+    return ClosureAmendResponse(
+        success=True,
+        original_id=closure_id,
+        new_closure_id=new_event["id"],
         amendment_case_id=amendment["id"],
     )

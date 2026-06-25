@@ -14,7 +14,7 @@ from app.errors import (
     unhandled_exception_handler,
     validation_error_handler,
 )
-from app.routers import closures, makeup, schools, waivers
+from app.routers import closures, district, makeup, schools, waivers
 
 app = FastAPI(
     title="Calendars & Closures API",
@@ -41,6 +41,7 @@ app.include_router(schools.router)
 app.include_router(closures.router)
 app.include_router(makeup.router)
 app.include_router(waivers.router)
+app.include_router(district.router)
 
 
 @app.get("/health", tags=["health"])

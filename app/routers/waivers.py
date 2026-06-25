@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends
 
 from app.errors import DistrictScopeViolation, NotFound, ValidationError
 from app.models.waiver_models import (
+    BoardMinutesRequest,
+    BoardMinutesResponse,
     Waiver,
     WaiverAction,
     WaiverUpdateRequest,
@@ -119,3 +121,62 @@ def _is_tier_3_plus(tier: str | None) -> bool:
         return False
     digits = "".join(ch for ch in tier if ch.isdigit())
     return bool(digits) and int(digits) >= 3
+
+
+@router.post("/{waiver_id}/board-minutes", response_model=BoardMinutesResponse)
+def upload_board_minutes(
+    waiver_id: str,
+    body: BoardMinutesRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> BoardMinutesResponse:
+    """Attach a board-minutes file to a waiver Case (Requirements §9).
+
+    Uploads the file as a ContentVersion, links it to the Case via
+    ContentDocumentLink, and flips Board_Minutes_Attached__c = true. The file
+    arrives base64-encoded in the JSON body (no multipart dependency).
+    """
+    record = sf.query_one(
+        "SELECT Id, Waiver_District__c FROM Case "
+        f"WHERE Id = '{waiver_id}' "
+        f"AND RecordType.DeveloperName = '{WAIVER_RT}' LIMIT 1"
+    )
+    if not record:
+        raise NotFound("Waiver case not found.")
+    if record.get("Waiver_District__c") != user.account_id:
+        raise DistrictScopeViolation("You do not have access to this waiver.")
+
+    # 1. Upload the file content. VersionData expects base64 — pass through.
+    cv = sf.create(
+        "ContentVersion",
+        {
+            "Title": body.file_name,
+            "PathOnClient": body.file_name,
+            "VersionData": body.content_base64,
+        },
+    )
+    # 2. Resolve the ContentDocumentId created alongside the version.
+    cv_rec = sf.query_one(
+        f"SELECT ContentDocumentId FROM ContentVersion WHERE Id = '{cv['id']}' LIMIT 1"
+    )
+    doc_id = cv_rec["ContentDocumentId"] if cv_rec else None
+    if not doc_id:
+        raise NotFound("Uploaded file's ContentDocument could not be resolved.")
+    # 3. Link the document to the waiver Case.
+    sf.create(
+        "ContentDocumentLink",
+        {
+            "ContentDocumentId": doc_id,
+            "LinkedEntityId": waiver_id,
+            "ShareType": "V",
+            "Visibility": "AllUsers",
+        },
+    )
+    # 4. Flag the case so the checkbox/UI reflect the attachment.
+    sf.update("Case", waiver_id, {"Board_Minutes_Attached__c": True})
+
+    return BoardMinutesResponse(
+        success=True,
+        waiver_id=waiver_id,
+        content_document_id=doc_id,
+        file_name=body.file_name,
+    )

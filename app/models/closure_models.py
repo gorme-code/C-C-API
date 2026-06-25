@@ -117,3 +117,23 @@ class ClosureCancelResponse(BaseModel):
     success: bool
     closure_id: str
     amendment_case_id: str
+
+
+# --- Amend (UC-05) -----------------------------------------------------
+# Per Decision #5: never edit in place. The original event is marked
+# 'Amended' and a new corrected event is created, with an Amendment Case
+# for the audit trail.
+
+class ClosureAmendRequest(BaseModel):
+    reason: str  # why the amendment is being made (audit note)
+    closure_reason: str | None = None
+    closure_type: str | None = None
+    hours_missed: float | None = None
+    instructional_day: bool | None = None
+
+
+class ClosureAmendResponse(BaseModel):
+    success: bool
+    original_id: str
+    new_closure_id: str
+    amendment_case_id: str

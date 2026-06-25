@@ -41,3 +41,17 @@ class WaiverUpdateResponse(BaseModel):
     new_status: str
     tier: str | None = None
     routing: str | None = None
+
+
+# --- Board minutes upload (Requirements §9) ----------------------------
+
+class BoardMinutesRequest(BaseModel):
+    file_name: str
+    content_base64: str  # base64-encoded file contents (no data: prefix)
+
+
+class BoardMinutesResponse(BaseModel):
+    success: bool
+    waiver_id: str
+    content_document_id: str
+    file_name: str
