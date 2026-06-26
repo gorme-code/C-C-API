@@ -1,0 +1,8 @@
+# Keep secrets and local cruft out of the image.
+.env
+.venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+wv_*.py
