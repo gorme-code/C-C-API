@@ -11,6 +11,7 @@ Closure_Event__c rows.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
@@ -65,8 +66,6 @@ def create_closure(
     """
     if body.scope != ClosureScope.district_wide and not body.school_ids:
         raise ValidationError("school_ids is required when scope is not District_Wide.")
-    if body.closure_end_date < body.closure_start_date:
-        raise ValidationError("closure_end_date cannot be before closure_start_date.")
 
     # Idempotency: if this external_id was already submitted, return that Case.
     safe_ext = body.external_id.replace("'", r"\'")
@@ -78,14 +77,39 @@ def create_closure(
     if existing:
         return _build_create_response(existing["Id"], user.account_id)
 
+    # Cross-district guard: all provided school_ids must belong to this district.
+    if body.school_ids:
+        id_list = ", ".join(f"'{sid}'" for sid in body.school_ids)
+        wrong = sf.query_one(
+            f"SELECT Id FROM Account WHERE Id IN ({id_list}) "
+            f"AND ParentId != '{user.account_id}' LIMIT 1"
+        )
+        if wrong:
+            raise DistrictScopeViolation(
+                "One or more provided schools do not belong to your district."
+            )
+
+    closure_dates_json = json.dumps([
+        {
+            "date": entry.date.isoformat(),
+            "closure_type": entry.closure_type,
+            "closure_reason": entry.closure_reason,
+            "hours_missed": entry.hours_missed,
+            "make_up_method": entry.make_up_method,
+            "elearning_day_number": entry.elearning_day_number,
+            "scheduled_makeup_date": (
+                entry.scheduled_makeup_date.isoformat()
+                if entry.scheduled_makeup_date else None
+            ),
+        }
+        for entry in body.closure_dates
+    ])
+
     payload = {
         "RecordTypeId": sf.record_type_id("Case", CLOSURE_SUBMISSION_RT),
         "Submission_Scope__c": body.scope.value,
-        "Closure_Start_Date__c": body.closure_start_date.isoformat(),
-        "Closure_End_Date__c": body.closure_end_date.isoformat(),
-        "Closure_Type__c": body.closure_type,
-        "Closure_Reason__c": body.closure_reason,
-        "Hours_Missed_Per_Day__c": body.hours_missed,
+        "Closure_Date_Entries__c": closure_dates_json,
+        "Submission_Comments__c": body.comments,
         "Submission_Status__c": "Submitted",  # fires Create_Closure_Events Flow
         "External_Id__c": body.external_id,
         "Submission_District__c": user.account_id,
@@ -170,14 +194,16 @@ def list_closures(
     records = sf.query(
         "SELECT Id, Name, School__c, School__r.Name, Closure_Date__c, "
         "Closure_Type__c, Closure_Reason__c, Hours_Missed__c, Status__c, "
-        "Make_Up_Required__c, Make_Up_Method__c, School_Year__c "
+        "Make_Up_Required__c, Make_Up_Method__c, School_Year__c, "
+        "eLearning_Day_Number__c, Scheduled_Makeup_Date__c, Comments__c "
         f"FROM Closure_Event__c WHERE {where} ORDER BY Closure_Date__c"
     )
     closures = [_to_closure_event(r) for r in records]
 
+    school_ids = {r["School__c"] for r in records if r.get("School__c")}
+
     # Per-school YTD comes from the authoritative Account roll-up (in days),
     # not from summing event hours.
-    school_ids = {r["School__c"] for r in records if r.get("School__c")}
     ytd: dict[str, float] = {}
     if school_ids:
         id_list = ", ".join(f"'{sid}'" for sid in school_ids)
@@ -187,10 +213,30 @@ def list_closures(
         ):
             ytd[acc["Id"]] = float(acc.get("Total_Missed_Days_YTD__c") or 0.0)
 
+    # eLearning days used this school year (July 1 – June 30), per school.
+    today = date.today()
+    sy_year = today.year if today.month >= 7 else today.year - 1
+    sy_start = f"{sy_year}-07-01"
+    sy_end = f"{sy_year + 1}-06-30"
+    elearning: dict[str, int] = {}
+    if school_ids:
+        id_list = ", ".join(f"'{sid}'" for sid in school_ids)
+        for row in sf.query(
+            "SELECT School__c, COUNT(Id) cnt "
+            "FROM Closure_Event__c "
+            f"WHERE School__c IN ({id_list}) "
+            "AND Closure_Type__c = 'Closed – eLearning' "
+            f"AND Closure_Date__c >= {sy_start} "
+            f"AND Closure_Date__c <= {sy_end} "
+            "GROUP BY School__c"
+        ):
+            elearning[row["School__c"]] = int(row.get("cnt") or 0)
+
     return ClosuresListResponse(
         closures=closures,
         total=len(closures),
         ytd_missed_days_by_school=ytd,
+        elearning_days_used_by_school=elearning,
     )
 
 
@@ -209,6 +255,9 @@ def _to_closure_event(r: dict) -> ClosureEvent:
         make_up_required=r.get("Make_Up_Required__c"),
         make_up_method=r.get("Make_Up_Method__c"),
         school_year=r.get("School_Year__c"),
+        elearning_day_number=r.get("eLearning_Day_Number__c"),
+        scheduled_makeup_date=r.get("Scheduled_Makeup_Date__c"),
+        comments=r.get("Comments__c"),
     )
 
 
