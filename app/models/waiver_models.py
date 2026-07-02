@@ -32,6 +32,7 @@ class WaiverUpdateRequest(BaseModel):
     justification: str | None = None
     board_minutes_attached: bool | None = None
     superintendent_certification: bool | None = None
+    days_requested_for_waiver: float | None = None
     action: WaiverAction = WaiverAction.save
 
 

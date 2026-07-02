@@ -96,6 +96,8 @@ def update_waiver(
         fields["Board_Minutes_Attached__c"] = body.board_minutes_attached
     if body.superintendent_certification is not None:
         fields["Superintendent_Certification__c"] = body.superintendent_certification
+    if body.days_requested_for_waiver is not None:
+        fields["Days_Requested_For_Waiver__c"] = body.days_requested_for_waiver
 
     new_status = record.get("Waiver_Status__c") or "Draft"
     routing = None
