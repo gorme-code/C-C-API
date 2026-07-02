@@ -91,7 +91,7 @@ def create_closure(
 
     closure_dates_json = json.dumps([
         {
-            "date": entry.date.isoformat(),
+            "date": entry.closure_start_date.isoformat(),
             "closure_type": entry.closure_type,
             "closure_reason": entry.closure_reason,
             "hours_missed": entry.hours_missed,

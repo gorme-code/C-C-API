@@ -40,7 +40,7 @@ class ClosureScope(str, Enum):
 
 
 class ClosureDateEntry(BaseModel):
-    date: date
+    closure_start_date: date
     closure_type: str
     closure_reason: str
     hours_missed: float = 6.5
