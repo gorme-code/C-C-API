@@ -91,18 +91,18 @@ def create_closure(
 
     closure_dates_json = json.dumps([
         {
-            "date": entry.closure_start_date.isoformat(),
-            "closure_type": entry.closure_type,
-            "closure_reason": entry.closure_reason,
-            "hours_missed": entry.hours_missed,
-            "make_up_method": entry.make_up_method,
-            "elearning_day_number": entry.elearning_day_number,
+            "date": body.closure_start_date.isoformat(),
+            "closure_end_date": body.closure_end_date.isoformat(),
+            "closure_type": body.closure_type,
+            "closure_reason": body.closure_reason,
+            "hours_missed": body.hours_missed,
+            "make_up_method": body.make_up_method,
+            "elearning_day_number": body.elearning_day_number,
             "scheduled_makeup_date": (
-                entry.scheduled_makeup_date.isoformat()
-                if entry.scheduled_makeup_date else None
+                body.scheduled_makeup_date.isoformat()
+                if body.scheduled_makeup_date else None
             ),
         }
-        for entry in body.closure_dates
     ])
 
     payload = {
