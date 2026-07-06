@@ -110,16 +110,29 @@ def resolve_contact(email: str) -> CurrentUser:
 def _dev_bypass_user() -> CurrentUser:
     """Stubbed identity for local dev when AUTH_DISABLED is on.
 
-    Returns a fixed district-scoped user WITHOUT calling Entra or Salesforce,
-    so endpoints can be exercised before real credentials exist. Refuses to
-    activate outside the development environment.
+    Resolves the dev user's district from their Contact_Role records (same
+    logic real auth will use), so testing against Salesforce data exercises
+    the actual scoping path. Refuses to activate outside development.
     """
     if settings.api_env.lower() != "development":
         raise Unauthorized("AUTH_DISABLED is only permitted in development.")
+
+    role = sf.query_one(
+        "SELECT Account__c FROM Contact_Role__c "
+        f"WHERE Contact__c = '{settings.dev_contact_id}' "
+        "AND Type__c = 'District' AND isActive__c = true "
+        "LIMIT 1"
+    )
+    if not role or not role.get("Account__c"):
+        raise Unauthorized(
+            f"Dev contact {settings.dev_contact_id} has no active District "
+            "Contact_Role — add one in Salesforce or set DEV_ACCOUNT_ID as fallback."
+        )
+
     return CurrentUser(
         email=settings.dev_user_email,
         contact_id=settings.dev_contact_id,
-        account_id=settings.dev_account_id,
+        account_id=role["Account__c"],
         name=settings.dev_user_name,
     )
 

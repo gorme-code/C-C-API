@@ -34,14 +34,18 @@ SCHOOL_SIDN_FIELD: str | None = None
 
 @router.get("/schools", response_model=SchoolsResponse)
 def get_schools(user: CurrentUser = Depends(get_current_user)) -> SchoolsResponse:
-    """Return all active School Accounts in the user's district."""
+    """Return School Accounts the user has an active School Contact_Role for."""
     fields = ["Id", "Name"]
     if SCHOOL_SIDN_FIELD:
         fields.append(SCHOOL_SIDN_FIELD)
     records = sf.query(
         f"SELECT {', '.join(fields)} FROM Account "
         "WHERE RecordType.DeveloperName = 'School' "
-        f"AND ParentId = '{user.account_id}' "
+        "AND Id IN ("
+        "    SELECT Account__c FROM Contact_Role__c "
+        f"   WHERE Contact__c = '{user.contact_id}' "
+        "    AND Type__c = 'School' AND isActive__c = true"
+        ") "
         "ORDER BY Name"
     )
     schools = [
