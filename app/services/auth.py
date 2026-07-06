@@ -107,6 +107,37 @@ def resolve_contact(email: str) -> CurrentUser:
     )
 
 
+def _resolve_district(contact_id: str) -> str | None:
+    """Return the district Account Id for a contact.
+
+    Checks District Contact_Role first; if none exists, falls back to resolving
+    via the contact's School Contact_Role → that school Account's ParentId.
+    """
+    district_role = sf.query_one(
+        "SELECT Account__c FROM Contact_Role__c "
+        f"WHERE Contact__c = '{contact_id}' "
+        "AND Type__c = 'District' AND isActive__c = true "
+        "LIMIT 1"
+    )
+    if district_role and district_role.get("Account__c"):
+        return district_role["Account__c"]
+
+    school_role = sf.query_one(
+        "SELECT Account__c FROM Contact_Role__c "
+        f"WHERE Contact__c = '{contact_id}' "
+        "AND Type__c = 'School' AND isActive__c = true "
+        "LIMIT 1"
+    )
+    if school_role and school_role.get("Account__c"):
+        school = sf.query_one(
+            f"SELECT ParentId FROM Account WHERE Id = '{school_role['Account__c']}' LIMIT 1"
+        )
+        if school and school.get("ParentId"):
+            return school["ParentId"]
+
+    return None
+
+
 def _dev_bypass_user() -> CurrentUser:
     """Stubbed identity for local dev when AUTH_DISABLED is on.
 
@@ -117,22 +148,16 @@ def _dev_bypass_user() -> CurrentUser:
     if settings.api_env.lower() != "development":
         raise Unauthorized("AUTH_DISABLED is only permitted in development.")
 
-    role = sf.query_one(
-        "SELECT Account__c FROM Contact_Role__c "
-        f"WHERE Contact__c = '{settings.dev_contact_id}' "
-        "AND Type__c = 'District' AND isActive__c = true "
-        "LIMIT 1"
-    )
-    if not role or not role.get("Account__c"):
+    account_id = _resolve_district(settings.dev_contact_id)
+    if not account_id:
         raise Unauthorized(
-            f"Dev contact {settings.dev_contact_id} has no active District "
-            "Contact_Role — add one in Salesforce or set DEV_ACCOUNT_ID as fallback."
+            f"Dev contact {settings.dev_contact_id} has no active Contact_Role "
+            "to resolve a district from."
         )
-
     return CurrentUser(
         email=settings.dev_user_email,
         contact_id=settings.dev_contact_id,
-        account_id=role["Account__c"],
+        account_id=account_id,
         name=settings.dev_user_name,
     )
 
