@@ -124,17 +124,29 @@ def create_closure(
 
 
 def _build_create_response(case_id: str, district_id: str) -> ClosureCreateResponse:
-    """Assemble the create response from the events + district YTD totals."""
+    """Assemble the create response from the events + submitted-schools YTD."""
     events = sf.query(
-        "SELECT Id, Make_Up_Required__c, Waiver_Request_Case__c "
+        "SELECT Id, School__c, Make_Up_Required__c, Waiver_Request_Case__c "
         "FROM Closure_Event__c "
         f"WHERE Source_Case__c = '{case_id}'"
     )
-    account = sf.query_one(
-        "SELECT Total_Missed_Days_YTD__c "
-        f"FROM Account WHERE Id = '{district_id}' LIMIT 1"
-    ) or {}
-    ytd = float(account.get("Total_Missed_Days_YTD__c") or 0.0)
+    school_ids = list({e["School__c"] for e in events if e.get("School__c")})
+    if school_ids:
+        id_list = ", ".join(f"'{sid}'" for sid in school_ids)
+        school_accounts = sf.query(
+            "SELECT Total_Missed_Days_YTD__c FROM Account "
+            f"WHERE Id IN ({id_list})"
+        )
+        ytd = max(
+            (float(a.get("Total_Missed_Days_YTD__c") or 0.0) for a in school_accounts),
+            default=0.0,
+        )
+    else:
+        account = sf.query_one(
+            "SELECT Total_Missed_Days_YTD__c "
+            f"FROM Account WHERE Id = '{district_id}' LIMIT 1"
+        ) or {}
+        ytd = float(account.get("Total_Missed_Days_YTD__c") or 0.0)
 
     makeup_required = any(e.get("Make_Up_Required__c") for e in events)
 
@@ -177,8 +189,23 @@ def list_closures(
     end_date: date | None = Query(default=None),
     school_year: str | None = Query(default=None),
 ) -> ClosuresListResponse:
-    """List closure events for the district with optional filters."""
+    """List closure events scoped to the user's schools.
+
+    If the user has active School Contact_Role records, results are limited to
+    those schools. Users with only a District Contact_Role see all district schools.
+    """
     clauses = [f"District__c = '{user.account_id}'"]
+
+    # Scope to the user's specific schools when Contact_Role records exist.
+    school_roles = sf.query(
+        "SELECT Account__c FROM Contact_Role__c "
+        f"WHERE Contact__c = '{user.contact_id}' "
+        "AND Type__c = 'School' AND isActive__c = true"
+    )
+    user_school_ids = [r["Account__c"] for r in school_roles if r.get("Account__c")]
+    if user_school_ids:
+        id_list = ", ".join(f"'{sid}'" for sid in user_school_ids)
+        clauses.append(f"School__c IN ({id_list})")
     if status:
         clauses.append(f"Status__c = '{status}'")
     if school_id:
