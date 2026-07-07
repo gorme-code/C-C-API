@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # API settings
     api_env: str = "development"
-    allowed_origins: str = "http://localhost:3000"
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000"
 
     # Local-dev auth bypass — lets you run endpoints before Entra/React/SF
     # exist. IGNORED unless api_env == "development".
