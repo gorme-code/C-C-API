@@ -75,6 +75,7 @@ def create_makeup(
                 "Hours_Covered__c": body.hours_covered,
             },
         )
+        sf.update("Closure_Event__c", cid, {"Status__c": "Make_Up_Pending"})
         links_created += 1
 
     updated = [
