@@ -131,6 +131,18 @@ def _build_create_response(case_id: str, district_id: str) -> ClosureCreateRespo
         f"WHERE Source_Case__c = '{case_id}'"
     )
     school_ids = list({e["School__c"] for e in events if e.get("School__c")})
+
+    # When 0 events were created (duplicate dates already existed), fall back to
+    # the school IDs from the Case so we still return school-level YTD, not
+    # district-level.
+    if not school_ids:
+        case = sf.query_one(
+            "SELECT Affected_School_IDs__c FROM Case "
+            f"WHERE Id = '{case_id}' LIMIT 1"
+        ) or {}
+        raw = case.get("Affected_School_IDs__c") or ""
+        school_ids = [sid.strip() for sid in raw.split(",") if sid.strip()]
+
     if school_ids:
         id_list = ", ".join(f"'{sid}'" for sid in school_ids)
         school_accounts = sf.query(

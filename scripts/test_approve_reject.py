@@ -29,7 +29,8 @@ client = TestClient(app)
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def post_closure(school_id: str, date_str: str, label: str) -> dict:
+def post_closure(school_id: str, date_str: str, label: str,
+                 closure_type: str = "Closed") -> dict:
     """Submit a single-day closure and return the parsed response."""
     import uuid
     r = client.post("/api/closures", json={
@@ -37,7 +38,7 @@ def post_closure(school_id: str, date_str: str, label: str) -> dict:
         "school_ids": [school_id],
         "closure_start_date": date_str,
         "closure_end_date": date_str,
-        "closure_type": "Closed",
+        "closure_type": closure_type,
         "closure_reason": "Weather_Conditions",
         "hours_missed": 6.5,
         "comments": f"test_approve_reject — {label}",
@@ -134,8 +135,19 @@ def main() -> None:
     school_name = schools[0].get("name", school_id)
     print(f"\nUsing school: {school_name} ({school_id})\n")
 
-    # 2. Submit closures for 7/23 and 7/24.
-    print("--- Creating closures ---")
+    # 2. Closed-type submission for 7/14 — verifies YTD/tier response is
+    #    school-level even when events already exist for that date (duplicate).
+    print("--- Closed test (7/14) ---")
+    resp_closed = post_closure(school_id, "2026-07-14", "closed-test",
+                               closure_type="Closed")
+    ytd_ok = resp_closed.get("ytd_missed_days", 99) < 10
+    tier_ok = resp_closed.get("current_tier") != "Tier 4"
+    print(f"  YTD={resp_closed.get('ytd_missed_days')}  "
+          f"tier={resp_closed.get('current_tier')}  "
+          f"{'PASS' if (ytd_ok and tier_ok) else 'FAIL — district-level YTD leak'}")
+
+    # 3. Submit closures for 7/23 and 7/24.
+    print("\n--- Creating closures ---")
     resp_approve = post_closure(school_id, "2026-07-23", "approve-test")
     resp_reject  = post_closure(school_id, "2026-07-24", "reject-test")
 
