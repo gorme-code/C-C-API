@@ -198,8 +198,8 @@ Interactive docs while running: <http://localhost:8000/docs>.
 
 `POST /api/closures` creates a `Closure_Submission` Case with `Submission_Status__c='Submitted'`,
 which fires the Salesforce **`Create_Closure_Events`** Flow → one `Closure_Event__c`
-per (school × date). Crossing a tier boundary fires **`Tier_Boundary_Check`** →
-auto-creates a Draft waiver Case and emails the district contact. The API reads
+per (school × date). The **`Tier_Boundary_Check`** Flow (auto-draft waiver on tier crossing) exists
+in the repo but is currently **deactivated** in the org. The API reads
 the district's `Total_Missed_Days_YTD__c` to return YTD + tier in the response.
 
 ---
