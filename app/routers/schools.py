@@ -20,6 +20,11 @@ from app.services.salesforce import sf
 
 router = APIRouter(prefix="/api", tags=["schools"])
 
+# Per-contact cache for schools (keyed by contact_id — works for dev bypass and
+# real Entra auth alike). Schools change very rarely; 10 min TTL is safe.
+_SCHOOLS_CACHE: dict[str, dict] = {}
+_SCHOOLS_TTL_SECONDS = 600
+
 # Simple in-memory cache for closure reasons (CMDT changes rarely).
 _REASONS_CACHE: dict[str, object] = {"data": None, "expires_at": 0.0}
 _REASONS_TTL_SECONDS = 3600
@@ -35,6 +40,11 @@ SCHOOL_SIDN_FIELD: str | None = None
 @router.get("/schools", response_model=SchoolsResponse)
 def get_schools(user: CurrentUser = Depends(get_current_user)) -> SchoolsResponse:
     """Return School Accounts the user has an active School Contact_Role for."""
+    now = time.monotonic()
+    cached = _SCHOOLS_CACHE.get(user.contact_id)
+    if cached and now < cached["expires_at"]:
+        return cached["data"]
+
     fields = ["Id", "Name"]
     if SCHOOL_SIDN_FIELD:
         fields.append(SCHOOL_SIDN_FIELD)
@@ -56,7 +66,9 @@ def get_schools(user: CurrentUser = Depends(get_current_user)) -> SchoolsRespons
         )
         for r in records
     ]
-    return SchoolsResponse(schools=schools)
+    response = SchoolsResponse(schools=schools)
+    _SCHOOLS_CACHE[user.contact_id] = {"data": response, "expires_at": now + _SCHOOLS_TTL_SECONDS}
+    return response
 
 
 @router.get("/closure-reasons", response_model=ClosureReasonsResponse)
