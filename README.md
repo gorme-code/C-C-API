@@ -191,6 +191,8 @@ unexpected exception, so the frontend never sees a non-standard payload.
 | 7 | POST | `/api/makeup` | Create `Makeup_Day__c` + `Closure_Makeup_Link__c` per event |
 | 8 | GET | `/api/waivers` | Waiver cases for the district |
 | 9 | PATCH | `/api/waivers/{id}` | Update / submit a waiver (Tier 3+ requires superintendent cert) |
+| 10 | GET | `/api/me` | Authenticated user's Contact (first/last name + primary role from `Contact_Role__c`) |
+| 11 | GET | `/api/district` | Authenticated user's district Account (id + name) |
 
 Interactive docs while running: <http://localhost:8000/docs>.
 
