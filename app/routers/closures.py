@@ -42,6 +42,36 @@ WAIVER_RT = "Closure_Waiver_Request"
 # (Tier2=3, Tier3=6, Tier4=9); mirrored here for the response tier label.
 _TIER2, _TIER3, _TIER4 = 3, 6, 9
 
+# Matches Compliance_Rules__mdt.Default.Hours_Per_Instructional_Day__c fallback in RollupMissedDays.cls.
+_HOURS_PER_DAY = 6.5
+
+
+def _current_school_year() -> str:
+    """Returns the school year label matching School_Year__c (ending year, e.g. '2027' for 2026-27)."""
+    today = date.today()
+    return str(today.year + 1) if today.month >= 7 else str(today.year)
+
+
+def _live_ytd_by_school(school_ids: list[str]) -> dict[str, float]:
+    """Live aggregate matching RollupMissedDays.rollup() exactly — no stale cache."""
+    if not school_ids:
+        return {}
+    school_year = _current_school_year()
+    id_list = ", ".join(f"'{sid}'" for sid in school_ids)
+    rows = sf.query(
+        "SELECT School__c, SUM(Hours_Missed__c) totalHours "
+        "FROM Closure_Event__c "
+        f"WHERE School__c IN ({id_list}) "
+        f"AND School_Year__c = '{school_year}' "
+        "AND Instructional_Day__c = true "
+        "GROUP BY School__c"
+    )
+    return {
+        r["School__c"]: round(float(r.get("totalHours") or 0.0) / _HOURS_PER_DAY, 2)
+        for r in rows
+        if r.get("School__c")
+    }
+
 
 def _tier_for_days(days: float) -> str:
     if days <= _TIER2:
@@ -144,21 +174,23 @@ def _build_create_response(case_id: str, district_id: str) -> ClosureCreateRespo
         school_ids = [sid.strip() for sid in raw.split(",") if sid.strip()]
 
     if school_ids:
-        id_list = ", ".join(f"'{sid}'" for sid in school_ids)
-        school_accounts = sf.query(
-            "SELECT Total_Missed_Days_YTD__c FROM Account "
-            f"WHERE Id IN ({id_list})"
+        ytd_by_school = _live_ytd_by_school(list(school_ids))
+        ytd = max(ytd_by_school.values(), default=0.0)
+    else:
+        # District-wide: aggregate all child schools live.
+        school_year = _current_school_year()
+        rows = sf.query(
+            "SELECT School__c, SUM(Hours_Missed__c) totalHours "
+            "FROM Closure_Event__c "
+            f"WHERE District__c = '{district_id}' "
+            f"AND School_Year__c = '{school_year}' "
+            "AND Instructional_Day__c = true "
+            "GROUP BY School__c"
         )
         ytd = max(
-            (float(a.get("Total_Missed_Days_YTD__c") or 0.0) for a in school_accounts),
+            (round(float(r.get("totalHours") or 0.0) / _HOURS_PER_DAY, 2) for r in rows),
             default=0.0,
         )
-    else:
-        account = sf.query_one(
-            "SELECT Total_Missed_Days_YTD__c "
-            f"FROM Account WHERE Id = '{district_id}' LIMIT 1"
-        ) or {}
-        ytd = float(account.get("Total_Missed_Days_YTD__c") or 0.0)
 
     makeup_required = any(e.get("Make_Up_Required__c") for e in events)
 
@@ -249,16 +281,10 @@ def list_closures(
 
     school_ids = {r["School__c"] for r in records if r.get("School__c")}
 
-    # Per-school YTD comes from the authoritative Account roll-up (in days),
-    # not from summing event hours.
+    # Per-school YTD — live aggregate (matches RollupMissedDays formula exactly).
     ytd: dict[str, float] = {}
     if school_ids:
-        id_list = ", ".join(f"'{sid}'" for sid in school_ids)
-        for acc in sf.query(
-            "SELECT Id, Total_Missed_Days_YTD__c FROM Account "
-            f"WHERE Id IN ({id_list})"
-        ):
-            ytd[acc["Id"]] = float(acc.get("Total_Missed_Days_YTD__c") or 0.0)
+        ytd = _live_ytd_by_school(list(school_ids))
 
     # eLearning days used this school year (July 1 – June 30), per school.
     today = date.today()
