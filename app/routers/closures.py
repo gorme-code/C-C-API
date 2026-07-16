@@ -201,23 +201,31 @@ def list_closures(
     end_date: date | None = Query(default=None),
     school_year: str | None = Query(default=None),
 ) -> ClosuresListResponse:
-    """List closure events scoped to the user's schools.
+    """List closure events scoped to the user's district or schools.
 
-    If the user has active School Contact_Role records, results are limited to
-    those schools. Users with only a District Contact_Role see all district schools.
+    District admins (active District Contact_Role) always see all closures in
+    their district regardless of any School Contact_Roles they also hold.
+    School-level users (no District Contact_Role) are limited to the schools
+    they have active School Contact_Roles for.
     """
     clauses = [f"District__c = '{user.account_id}'"]
 
-    # Scope to the user's specific schools when Contact_Role records exist.
-    school_roles = sf.query(
-        "SELECT Account__c FROM Contact_Role__c "
+    # District admins see everything — skip school sub-filtering.
+    district_role = sf.query_one(
+        "SELECT Id FROM Contact_Role__c "
         f"WHERE Contact__c = '{user.contact_id}' "
-        "AND Type__c = 'School' AND isActive__c = true"
+        "AND Type__c = 'District' AND isActive__c = true LIMIT 1"
     )
-    user_school_ids = [r["Account__c"] for r in school_roles if r.get("Account__c")]
-    if user_school_ids:
-        id_list = ", ".join(f"'{sid}'" for sid in user_school_ids)
-        clauses.append(f"School__c IN ({id_list})")
+    if not district_role:
+        school_roles = sf.query(
+            "SELECT Account__c FROM Contact_Role__c "
+            f"WHERE Contact__c = '{user.contact_id}' "
+            "AND Type__c = 'School' AND isActive__c = true"
+        )
+        user_school_ids = [r["Account__c"] for r in school_roles if r.get("Account__c")]
+        if user_school_ids:
+            id_list = ", ".join(f"'{sid}'" for sid in user_school_ids)
+            clauses.append(f"School__c IN ({id_list})")
     if status:
         clauses.append(f"Status__c = '{status}'")
     if school_id:

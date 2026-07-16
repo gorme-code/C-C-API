@@ -39,7 +39,12 @@ SCHOOL_SIDN_FIELD: str | None = None
 
 @router.get("/schools", response_model=SchoolsResponse)
 def get_schools(user: CurrentUser = Depends(get_current_user)) -> SchoolsResponse:
-    """Return School Accounts the user has an active School Contact_Role for."""
+    """Return schools the user may submit closures, waivers, and makeups for.
+
+    District admins (active District Contact_Role) always get all schools in
+    their district — the District role takes priority over any School roles.
+    School-only users get the schools they have active School Contact_Roles for.
+    """
     now = time.monotonic()
     cached = _SCHOOLS_CACHE.get(user.contact_id)
     if cached and now < cached["expires_at"]:
@@ -48,15 +53,30 @@ def get_schools(user: CurrentUser = Depends(get_current_user)) -> SchoolsRespons
     fields = ["Id", "Name"]
     if SCHOOL_SIDN_FIELD:
         fields.append(SCHOOL_SIDN_FIELD)
+
+    district_role = sf.query_one(
+        "SELECT Id FROM Contact_Role__c "
+        f"WHERE Contact__c = '{user.contact_id}' "
+        "AND Type__c = 'District' AND isActive__c = true LIMIT 1"
+    )
+
+    if district_role:
+        # District admins submit for all schools in their district.
+        where = f"RecordType.DeveloperName = 'School' AND ParentId = '{user.account_id}'"
+    else:
+        school_roles = sf.query(
+            "SELECT Account__c FROM Contact_Role__c "
+            f"WHERE Contact__c = '{user.contact_id}' "
+            "AND Type__c = 'School' AND isActive__c = true"
+        )
+        school_role_ids = [r["Account__c"] for r in school_roles if r.get("Account__c")]
+        if not school_role_ids:
+            return SchoolsResponse(schools=[])
+        id_list = ", ".join(f"'{sid}'" for sid in school_role_ids)
+        where = f"RecordType.DeveloperName = 'School' AND Id IN ({id_list})"
+
     records = sf.query(
-        f"SELECT {', '.join(fields)} FROM Account "
-        "WHERE RecordType.DeveloperName = 'School' "
-        "AND Id IN ("
-        "    SELECT Account__c FROM Contact_Role__c "
-        f"   WHERE Contact__c = '{user.contact_id}' "
-        "    AND Type__c = 'School' AND isActive__c = true"
-        ") "
-        "ORDER BY Name"
+        f"SELECT {', '.join(fields)} FROM Account WHERE {where} ORDER BY Name"
     )
     schools = [
         School(
