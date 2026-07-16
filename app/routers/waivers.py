@@ -33,7 +33,7 @@ def list_waivers(
     records = sf.query(
         "SELECT Id, CaseNumber, Waiver_Status__c, Tier__c, "
         "Total_Missed_Days__c, Days_Already_Made_Up__c, "
-        "Days_Requested_For_Waiver__c, CreatedDate, "
+        "Days_Requested_For_Waiver__c, CreatedDate, Contact.Name, "
         "(SELECT Id FROM WaiverCase__r) FROM Case "
         f"WHERE RecordType.DeveloperName = '{WAIVER_RT}' "
         f"AND Waiver_District__c = '{user.account_id}' "
@@ -50,6 +50,7 @@ def list_waivers(
             days_requested_for_waiver=r.get("Days_Requested_For_Waiver__c"),
             created_date=r.get("CreatedDate"),
             closure_events_count=_subquery_count(r.get("WaiverCase__r")),
+            submitted_by=(r.get("Contact") or {}).get("Name"),
         )
         for r in records
     ]

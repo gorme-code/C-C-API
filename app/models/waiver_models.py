@@ -17,6 +17,7 @@ class Waiver(BaseModel):
     days_requested_for_waiver: float | None = None
     created_date: datetime | None = None
     closure_events_count: int | None = None
+    submitted_by: str | None = None
 
 
 class WaiversListResponse(BaseModel):
